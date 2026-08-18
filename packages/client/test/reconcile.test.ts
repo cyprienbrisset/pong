@@ -1,66 +1,68 @@
 import { describe, expect, it } from 'vitest';
-import { pruneAcknowledged, replayPendingInputs } from '../src/net/reconcile.js';
+import { decayOffset, foldDriftIntoOffset } from '../src/net/reconcile.js';
 
 /**
- * Cas réel signalé : la raquette locale recule légèrement puis revient à sa
- * place, même à ping bas et stable. Cause : la réconciliation lissait en
- * continu vers la dernière position connue du serveur — toujours en léger
- * retard — au lieu de repartir de cette position confirmée et de rejouer
- * exactement les entrées envoyées mais pas encore acquittées.
+ * Cas réel signalé, mesuré en production : rejouer un historique d'entrées
+ * envoyées ne reconstruit pas la trajectoire serveur, parce que le serveur
+ * échantillonne en continu et n'a pas de correspondance 1-pour-1 avec les
+ * entrées envoyées. La bonne technique consiste à toujours coller à la
+ * vérité serveur en interne, et à absorber l'écart dans un décalage visuel
+ * qui s'estompe — la position affichée ne doit jamais discontinuer.
  */
-describe('purge des entrées acquittées', () => {
-  it('retire les entrées dont le serveur a déjà tenu compte', () => {
-    const pending = [
-      { seq: 10, axis: 1 },
-      { seq: 11, axis: 1 },
-      { seq: 12, axis: -1 },
-    ];
-    expect(pruneAcknowledged(pending, 11)).toEqual([{ seq: 12, axis: -1 }]);
+describe('transfert de l\'écart dans un décalage visuel', () => {
+  it('rend la position interne identique à la vérité serveur', () => {
+    const r = foldDriftIntoOffset(310, 300, 0);
+    expect(r.y).toBe(300);
   });
 
-  it("garde tout quand rien n'a encore été acquitté", () => {
-    const pending = [{ seq: 5, axis: 0.3 }];
-    expect(pruneAcknowledged(pending, 4)).toEqual(pending);
+  it("conserve la position affichée (y + offset) inchangée à l'instant du recalage", () => {
+    const before = { y: 290, offset: 5 };
+    const displayedBefore = before.y + before.offset;
+    const r = foldDriftIntoOffset(before.y, 300, before.offset);
+    expect(r.y + r.offset).toBeCloseTo(displayedBefore, 9);
   });
 
-  it('gère le repli du compteur de séquence à 65536', () => {
-    const pending = [
-      { seq: 65535, axis: 1 },
-      { seq: 2, axis: 1 },
-    ];
-    expect(pruneAcknowledged(pending, 65534)).toEqual(pending);
-    expect(pruneAcknowledged(pending, 65535)).toEqual([{ seq: 2, axis: 1 }]);
+  it('absorbe un écart négatif (prédiction en retard sur le serveur)', () => {
+    const r = foldDriftIntoOffset(290, 300, 0);
+    expect(r.y).toBe(300);
+    expect(r.offset).toBeCloseTo(-10, 9);
+  });
+
+  it('compose plusieurs recalages sans jamais changer la position affichée', () => {
+    let state = { y: 300, offset: 0 };
+    const displayed = () => state.y + state.offset;
+    const start = displayed();
+
+    state = foldDriftIntoOffset(320, 305, state.offset); // prédiction ayant avancé, nouvelle vérité
+    expect(displayed()).toBeCloseTo(start + 20, 9);
+
+    state = foldDriftIntoOffset(state.y + 15, 340, state.offset); // encore une prédiction, nouvelle vérité
+    expect(displayed()).toBeCloseTo(start + 35, 9);
   });
 });
 
-describe('rejeu des entrées non acquittées', () => {
-  it("part de la position confirmée, pas de l'ancienne prédiction", () => {
-    const y = replayPendingInputs(300, 104, [], false);
-    expect(y).toBe(300);
+describe('décroissance du décalage visuel', () => {
+  it('réduit le décalage sans jamais changer de signe', () => {
+    const next = decayOffset(10, 0.1, 8);
+    expect(next).toBeGreaterThan(0);
+    expect(next).toBeLessThan(10);
   });
 
-  it('rejoue chaque entrée dans l\'ordre pour reconstruire la position actuelle', () => {
-    const oneTick = 620 * (1 / 60); // PADDLE_SPEED * TICK_DT
-    const y = replayPendingInputs(300, 104, [{ seq: 1, axis: 1 }, { seq: 2, axis: 1 }], false);
-    expect(y).toBeCloseTo(300 + 2 * oneTick, 5);
+  it('fonctionne symétriquement pour un décalage négatif', () => {
+    const next = decayOffset(-10, 0.1, 8);
+    expect(next).toBeLessThan(0);
+    expect(next).toBeGreaterThan(-10);
+    expect(next).toBeCloseTo(-decayOffset(10, 0.1, 8), 9);
   });
 
-  it("s'arrête pile à la position d'arrêt quand la dernière entrée envoyée est déjà à l'axe zéro", () => {
-    // Le joueur a relâché la touche : le serveur n'a pas encore confirmé l'arrêt,
-    // mais l'entrée envoyée après le relâchement porte déjà un axe nul.
-    const oneTick = 620 * (1 / 60);
-    const y = replayPendingInputs(300, 104, [{ seq: 1, axis: 1 }, { seq: 2, axis: 0 }], false);
-    expect(y).toBeCloseTo(300 + oneTick, 5);
+  it('retombe exactement à zéro une fois négligeable', () => {
+    expect(decayOffset(0.03, 0.1, 8)).toBe(0);
+    expect(decayOffset(-0.03, 0.1, 8)).toBe(0);
   });
 
-  it("respecte l'inversion de commande", () => {
-    const oneTick = 620 * (1 / 60);
-    const y = replayPendingInputs(300, 104, [{ seq: 1, axis: 1 }], true);
-    expect(y).toBeCloseTo(300 - oneTick, 5);
-  });
-
-  it('reste dans les bornes du terrain', () => {
-    const y = replayPendingInputs(590, 104, [{ seq: 1, axis: 1 }], false);
-    expect(y).toBeLessThanOrEqual(600 - 104);
+  it('converge vers zéro au fil des images à un framerate réaliste', () => {
+    let offset = 30;
+    for (let i = 0; i < 120; i++) offset = decayOffset(offset, 1 / 60, 8);
+    expect(Math.abs(offset)).toBeLessThan(0.5);
   });
 });

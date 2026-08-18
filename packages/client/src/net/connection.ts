@@ -25,13 +25,6 @@ export interface NetHandlers {
   onOver(payload: Extract<ServerControl, { t: 'over' }>): void;
   onError(payload: Extract<ServerControl, { t: 'error' }>): void;
   onStatus(status: 'connecting' | 'open' | 'closed'): void;
-  /**
-   * Appelé exactement au moment de l'envoi de chaque entrée, pour que la
-   * prédiction locale avance en parfaite correspondance avec ce qui part
-   * vraiment sur le réseau — un tick prédit pour un tick envoyé, jamais deux
-   * horloges qui dérivent l'une de l'autre.
-   */
-  computeInputAxis(seq: number): number;
 }
 
 /**
@@ -99,6 +92,7 @@ export class Connection {
   private ws: WebSocket | null = null;
   private url: string;
   private seq = 0;
+  private axis = 0;
   private inputTimer: number | null = null;
   private pingTimer: number | null = null;
   private reconnectDelay = 500;
@@ -220,8 +214,7 @@ export class Connection {
     // d'affichage : un écran 144 Hz ne doit pas inonder le serveur.
     this.inputTimer = window.setInterval(() => {
       this.seq = (this.seq + 1) & 0xffff;
-      const axis = Math.max(-1, Math.min(1, this.handlers.computeInputAxis(this.seq)));
-      this.sendBinary(encodeInput(this.seq, axis, 0));
+      this.sendBinary(encodeInput(this.seq, this.axis, 0));
     }, TICK_DT * 1000);
     this.pingTimer = window.setInterval(() => {
       this.sendBinary(encodePing(performance.now()));
@@ -233,6 +226,10 @@ export class Connection {
     if (this.pingTimer !== null) window.clearInterval(this.pingTimer);
     this.inputTimer = null;
     this.pingTimer = null;
+  }
+
+  setAxis(axis: number): void {
+    this.axis = Math.max(-1, Math.min(1, axis));
   }
 
   send(msg: ClientControl): void {

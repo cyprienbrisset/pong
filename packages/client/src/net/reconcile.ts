@@ -1,40 +1,34 @@
-import { FIELD_H, isNewer, predictPaddle } from '@neon-pong/shared';
-
-/** Une entrée envoyée au serveur, conservée jusqu'à son acquittement. */
-export interface PendingInput {
-  seq: number;
-  axis: number;
+/**
+ * Réconciliation par décalage visuel qui s'estompe.
+ *
+ * Rejouer un historique d'entrées envoyées ne fonctionne pas ici : le serveur
+ * ne compte pas les entrées, il échantillonne en continu le dernier axe reçu
+ * à sa propre cadence de tick, indépendante de celle d'envoi du client. Le
+ * nombre d'entrées envoyées et le nombre de ticks serveur exécutés divergent
+ * (mesuré en production : des écarts en multiples exacts d'un tick).
+ *
+ * On repart donc de la vérité serveur à chaque frame — aucune dérive ne
+ * s'accumule dans la position interne — et on absorbe l'écart introduit dans
+ * un décalage purement visuel, qui se résorbe en douceur. La position
+ * affichée (position interne + décalage) reste continue à chaque frame,
+ * même quand la position interne, elle, se recale instantanément.
+ */
+export interface Reconciled {
+  y: number;
+  offset: number;
 }
 
 /**
- * Ne garde que les entrées que le serveur n'a pas encore prises en compte.
- * `ackSeq` vient du dernier snapshot reçu : tout ce qui est plus ancien ou
- * égal a déjà influencé la position que ce snapshot rapporte.
+ * Fait coller `y` à `authoritativeY` et transfère l'écart dans `offset`, de
+ * sorte que `y + offset` après l'appel vaille exactement `predictedY + offset`
+ * avant l'appel — aucune discontinuité visuelle au moment du recalage.
  */
-export function pruneAcknowledged(pending: PendingInput[], ackSeq: number): PendingInput[] {
-  // `isNewer` traite une séquence égale comme « plus récente » (utile pour
-  // décider si un ackSeq reçu doit remplacer l'ancien) ; ici on veut l'exclure,
-  // puisqu'une entrée dont le numéro est exactement celui acquitté a déjà
-  // influencé la position que le serveur rapporte.
-  return pending.filter((p) => p.seq !== ackSeq && isNewer(p.seq, ackSeq));
+export function foldDriftIntoOffset(predictedY: number, authoritativeY: number, offset: number): Reconciled {
+  return { y: authoritativeY, offset: offset + (predictedY - authoritativeY) };
 }
 
-/**
- * Reconstruit la position actuelle de la raquette locale : on repart de la
- * position confirmée par le serveur, puis on rejoue exactement les entrées
- * envoyées mais pas encore acquittées, dans l'ordre. Contrairement à un
- * lissage continu vers une valeur toujours en léger retard, cette
- * reconstruction ne produit aucune correction visible tant que la prédiction
- * et la simulation serveur restent d'accord — y compris au moment précis où
- * le joueur s'arrête ou change de direction.
- */
-export function replayPendingInputs(
-  authoritativeY: number,
-  paddleH: number,
-  pending: PendingInput[],
-  inverted: boolean,
-): number {
-  let y = authoritativeY;
-  for (const p of pending) y = predictPaddle(y, paddleH, p.axis, inverted);
-  return Math.max(0, Math.min(FIELD_H - paddleH, y));
+/** Estompe le décalage vers zéro sans jamais le faire changer de signe brutalement. */
+export function decayOffset(offset: number, dt: number, rate = 8): number {
+  const next = offset * (1 - Math.min(1, dt * rate));
+  return Math.abs(next) < 0.05 ? 0 : next;
 }

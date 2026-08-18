@@ -5,7 +5,6 @@ import {
   FX_INVERT,
   FX_SHIELD,
   FX_SHRINK,
-  PADDLE_H,
   POWERS,
   TICK_DT,
   predictPaddle,
@@ -13,7 +12,7 @@ import {
 import type { GameEvent, MatchConfig, RoomView, Side, Snapshot } from '@neon-pong/shared';
 import { Connection } from './net/connection.js';
 import { Input } from './game/input.js';
-import { type PendingInput, pruneAcknowledged, replayPendingInputs } from './net/reconcile.js';
+import { decayOffset, foldDriftIntoOffset } from './net/reconcile.js';
 import { Renderer } from './game/renderer.js';
 import { Sound } from './game/sound.js';
 import { el, initShell, renderLeaderboard, renderRoom, setHudEffects, setStatus, showPanel } from './ui/shell.js';
@@ -50,11 +49,15 @@ let localSide: Side | null = null;
 let room: RoomView | null = null;
 let arena: MatchConfig['arena'] = 'classique';
 let lastFrame = performance.now();
+let predictionAccumulator = 0;
 let lastHudTick = -1;
-/** Entrées envoyées mais pas encore acquittées par le serveur (réconciliation). */
-let pendingInputs: PendingInput[] = [];
-/** Tick du dernier snapshot déjà réconcilié : on ne rejoue qu'une fois par snapshot. */
-let lastReconciledTick = -1;
+/**
+ * Décalage purement visuel qui absorbe l'écart entre prédiction et vérité
+ * serveur : la position affichée est `localPaddleY + visualOffset`, jamais
+ * `localPaddleY` seul. Voir net/reconcile.ts pour la raison de cette
+ * indirection plutôt qu'un rejeu d'entrées.
+ */
+let visualOffset = 0;
 
 const pendingConfig: Partial<MatchConfig> = {};
 
@@ -66,8 +69,7 @@ const conn = new Connection(
       room = view;
       arena = view.config.arena;
       localPaddleY = null;
-      pendingInputs = [];
-      lastReconciledTick = -1;
+      visualOffset = 0;
       renderRoom(view, side, conn.playerId);
       showPanel(null);
     },
@@ -89,19 +91,6 @@ const conn = new Connection(
       void refreshLeaderboard();
     },
     onError: (payload) => showPanel('error', { title: 'Impossible de rejoindre', detail: payload.message }),
-    computeInputAxis: (seq) => {
-      if (localSide === null) return 0;
-      const authoritative = conn.buffer.latest?.paddles[localSide];
-      const h = authoritative?.h ?? PADDLE_H;
-      if (localPaddleY === null) localPaddleY = authoritative?.y ?? FIELD_H / 2 - h / 2;
-
-      const inverted = authoritative ? (authoritative.flags & FX_INVERT) !== 0 : false;
-      input.setPaddleHeight(h);
-      const axis = input.axis(localPaddleY);
-      localPaddleY = Math.max(0, Math.min(FIELD_H - h, predictPaddle(localPaddleY, h, axis, inverted)));
-      pendingInputs.push({ seq, axis });
-      return axis;
-    },
   },
   () => ({
     t: 'join',
@@ -122,43 +111,42 @@ function frame(now: number): void {
   const lerp = conn.buffer.sample(now);
   const snap = conn.buffer.latest;
 
-  if (snap && localSide !== null && snap.tick !== lastReconciledTick) {
-    // Réconciliation : à chaque nouveau snapshot, on repart de la position
-    // confirmée par le serveur et on rejoue exactement les entrées envoyées
-    // mais pas encore acquittées. Pas de lissage continu vers une valeur
-    // toujours en léger retard : c'est ce qui faisait reculer la raquette de
-    // façon visible à chaque arrêt ou changement de direction, même à ping
-    // bas, puisque le retard est structurel (temps d'aller-retour), pas un
-    // symptôme de mauvais réseau.
-    lastReconciledTick = snap.tick;
+  if (snap && localSide !== null) {
+    // Prédiction continue : on avance à chaque frame avec l'axe courant,
+    // exactement comme le serveur échantillonne en continu le dernier axe
+    // reçu. Rejouer un historique d'entrées ne marche pas ici — mesuré en
+    // production, le nombre d'entrées envoyées par le client et le nombre de
+    // ticks exécutés par le serveur divergent, le serveur n'ayant pas de
+    // correspondance 1-pour-1 entre les deux.
     const authoritative = snap.paddles[localSide];
-    const inverted = (authoritative.flags & FX_INVERT) !== 0;
-    pendingInputs = pruneAcknowledged(pendingInputs, conn.ackSeq);
-    const before = localPaddleY;
-    localPaddleY = replayPendingInputs(authoritative.y, authoritative.h, pendingInputs, inverted);
+    if (localPaddleY === null) localPaddleY = authoritative.y;
 
-    // Diagnostic temporaire : un saut de raquette signalé persiste malgré la
-    // réconciliation par rejeu. Ceci mesure l'écart réel introduit par CHAQUE
-    // rebasement, pour distinguer un vrai bug de reconstruction d'une cause
-    // totalement différente.
-    if (before !== null && Math.abs(localPaddleY - before) > 3) {
-      // eslint-disable-next-line no-console
-      console.warn('[reconcile] correction', {
-        deltaPx: Math.round((localPaddleY - before) * 10) / 10,
-        tick: snap.tick,
-        ackSeq: conn.ackSeq,
-        pendingCount: pendingInputs.length,
-        authoritativeY: Math.round(authoritative.y),
-        h: authoritative.h,
-        flags: authoritative.flags,
-      });
+    const inverted = (authoritative.flags & FX_INVERT) !== 0;
+    input.setPaddleHeight(authoritative.h);
+    const axis = input.axis(localPaddleY + visualOffset);
+    conn.setAxis(axis);
+
+    predictionAccumulator += dt;
+    while (predictionAccumulator >= TICK_DT) {
+      localPaddleY = predictPaddle(localPaddleY, authoritative.h, axis, inverted);
+      predictionAccumulator -= TICK_DT;
     }
+    localPaddleY = Math.max(0, Math.min(FIELD_H - authoritative.h, localPaddleY));
+
+    // On recale la position interne sur la vérité serveur à chaque frame —
+    // aucune dérive ne s'y accumule jamais — et on transfère l'écart dans un
+    // décalage purement visuel, qui s'estompe en douceur. La position
+    // affichée (localPaddleY + visualOffset) ne discontinue jamais, y
+    // compris au moment précis où le joueur s'arrête ou change de direction.
+    const reconciled = foldDriftIntoOffset(localPaddleY, authoritative.y, visualOffset);
+    localPaddleY = reconciled.y;
+    visualOffset = decayOffset(reconciled.offset, dt);
   }
 
   const label = countdownLabel(snap?.status, snap?.timer);
   renderer.draw(
     {
-      localPaddleY,
+      localPaddleY: localPaddleY === null ? null : localPaddleY + visualOffset,
       localSide,
       arena,
       snapshot: snap,
@@ -260,8 +248,7 @@ initShell({
     localPaddleY = null;
     localSide = null;
     room = null;
-    pendingInputs = [];
-    lastReconciledTick = -1;
+    visualOffset = 0;
     showPanel('menu');
   },
   onToggleSound: (on) => {
