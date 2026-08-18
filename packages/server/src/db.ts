@@ -4,6 +4,7 @@ import type { DatabaseSync as DatabaseSyncCtor } from 'node:sqlite';
 import { dirname } from 'node:path';
 import type { Theme } from '@neon-pong/shared';
 import { config } from './config.js';
+import { computeEloRatings } from './elo.js';
 import { logger } from './logger.js';
 
 /**
@@ -26,6 +27,8 @@ export interface LeaderboardRow {
   best_rally: number;
   win_rate: number;
   point_diff: number;
+  /** Elo recalculé sur tout l'historique (K=24, base 1200) : classe par niveau, pas par volume. */
+  rating: number;
 }
 
 export interface MatchRecord {
@@ -88,6 +91,7 @@ export class Store {
   private insertMatch;
   private insertPlayer;
   private leaderboardStmt;
+  private historyStmt;
   private recentStmt;
   private upsertThemeStmt;
   private listThemesStmt;
@@ -122,8 +126,18 @@ export class Store {
       JOIN match_players opp ON opp.match_id = mp.match_id AND opp.side <> mp.side
       WHERE mp.is_bot = 0
       GROUP BY mp.name
-      ORDER BY wins DESC, point_diff DESC, matches ASC
-      LIMIT ?
+    `);
+    // Historique chronologique complet, tous participants (bots compris) : sert
+    // uniquement à rejouer l'Elo, jamais affiché tel quel.
+    this.historyStmt = this.db.prepare(`
+      SELECT m.id                                          AS match_id,
+             MAX(CASE WHEN mp.side = 0 THEN mp.name END)    AS name0,
+             MAX(CASE WHEN mp.side = 0 THEN mp.won  END)    AS won0,
+             MAX(CASE WHEN mp.side = 1 THEN mp.name END)    AS name1,
+             MAX(CASE WHEN mp.side = 1 THEN mp.won  END)    AS won1
+      FROM matches m JOIN match_players mp ON mp.match_id = m.id
+      GROUP BY m.id
+      ORDER BY m.id ASC
     `);
     this.recentStmt = this.db.prepare(`
       SELECT m.played_at, m.arena, m.best_rally,
@@ -185,8 +199,29 @@ export class Store {
     }
   }
 
+  /**
+   * Trié par Elo, pas par nombre brut de victoires : un joueur qui accumule les
+   * matchs à faible taux de victoire ne doit pas dépasser un joueur régulier
+   * qui en joue moins. L'Elo est recalculé à rebours sur tout l'historique à
+   * chaque appel — largement suffisant au volume d'une équipe.
+   */
   leaderboard(limit = 50): LeaderboardRow[] {
-    return this.leaderboardStmt.all(limit) as unknown as LeaderboardRow[];
+    const rows = this.leaderboardStmt.all() as unknown as Omit<LeaderboardRow, 'rating'>[];
+    const history = this.historyStmt.all() as unknown as {
+      match_id: number;
+      name0: string;
+      won0: number;
+      name1: string;
+      won1: number;
+    }[];
+    const ratings = computeEloRatings(
+      history.map((h) => ({ playerA: h.name0, playerB: h.name1, winner: h.won0 ? ('a' as const) : ('b' as const) })),
+    );
+
+    return rows
+      .map((r) => ({ ...r, rating: Math.round(ratings.get(r.name) ?? 1200) }))
+      .sort((a, b) => b.rating - a.rating || b.point_diff - a.point_diff || a.matches - b.matches)
+      .slice(0, limit);
   }
 
   recentMatches(limit = 20) {

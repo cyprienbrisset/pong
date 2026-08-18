@@ -164,6 +164,47 @@ describe('persistance', () => {
     expect(cyprien.best_rally).toBe(30);
   });
 
+  it('classe par niveau (Elo) plutôt que par nombre brut de victoires', () => {
+    const store = memStore();
+    // Bob gagne ses 8 matchs contre Ann.
+    for (let i = 0; i < 8; i++) {
+      store.recordMatch({
+        arena: 'classique',
+        target: 7,
+        powerups: false,
+        bestRally: 5,
+        players: [
+          { name: 'Bob', side: 0, score: 7, bot: false, won: true },
+          { name: 'Ann', side: 1, score: 3, bot: false, won: false },
+        ],
+      });
+    }
+    // Théo joue 30 matchs contre Ann et n'en gagne que 12 (40 %) : plus de
+    // victoires brutes que Bob, mais un niveau réel inférieur.
+    for (let i = 0; i < 30; i++) {
+      const theoWins = i % 5 < 2;
+      store.recordMatch({
+        arena: 'classique',
+        target: 7,
+        powerups: false,
+        bestRally: 5,
+        players: [
+          { name: 'Theo', side: 0, score: theoWins ? 7 : 3, bot: false, won: theoWins },
+          { name: 'Ann', side: 1, score: theoWins ? 3 : 7, bot: false, won: !theoWins },
+        ],
+      });
+    }
+
+    const rows = store.leaderboard();
+    const bob = rows.find((r) => r.name === 'Bob')!;
+    const theo = rows.find((r) => r.name === 'Theo')!;
+    expect(theo.wins).toBeGreaterThan(bob.wins);
+    expect(bob.rating).toBeGreaterThan(theo.rating);
+    expect(rows.findIndex((r) => r.name === 'Bob')).toBeLessThan(
+      rows.findIndex((r) => r.name === 'Theo'),
+    );
+  });
+
   it('liste les matchs récents avec les deux camps', () => {
     const store = memStore();
     store.recordMatch({
