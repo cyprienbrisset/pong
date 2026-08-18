@@ -365,6 +365,25 @@ export class Renderer {
         );
       }
 
+      if (side === state.localSide) {
+        // Repère de camp : une flèche qui pointe sa propre raquette, en couleur
+        // d'accent plutôt qu'en couleur de camp. Sur les chartes Oscilloscope et
+        // Plan technique, sideA et sideB sont identiques — seule la position
+        // permet alors de reconnaître sa raquette.
+        const { x: mx, y: my } = ownPaddleMarkerAnchor(side, y, h);
+        const dir = side === 0 ? 1 : -1;
+        const size = 7;
+        c.save();
+        c.fillStyle = this.theme.tokens.accent;
+        c.beginPath();
+        c.moveTo(mx, my);
+        c.lineTo(mx + dir * size, my - size);
+        c.lineTo(mx + dir * size, my + size);
+        c.closePath();
+        c.fill();
+        c.restore();
+      }
+
       if (remote.flags & FX_SHIELD) {
         const gx = side === 0 ? 6 : FIELD_W - 6;
         c.save();
@@ -512,4 +531,17 @@ export class Renderer {
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+/**
+ * Position du repère de raquette locale : sur le bord intérieur du camp, au
+ * milieu de sa hauteur. Certaines chartes (Oscilloscope, Plan technique)
+ * donnent la même couleur aux deux camps — le repère doit donc identifier son
+ * propre camp par la position, jamais par la teinte.
+ */
+export function ownPaddleMarkerAnchor(side: 0 | 1, y: number, h: number): { x: number; y: number } {
+  return {
+    x: side === 0 ? paddleX(0) + PADDLE_W : paddleX(1),
+    y: y + h / 2,
+  };
 }
