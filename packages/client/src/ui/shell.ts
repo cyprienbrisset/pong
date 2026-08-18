@@ -44,12 +44,18 @@ export function initShell(h: ShellHandlers): void {
   buildArenaPicker();
   bindSegments();
 
+  // Un code résiduel dans le champ (lien `?code=` réutilisé, ancienne saisie
+  // pour « Rejoindre ») ne doit jamais transformer une création de salle en
+  // tentative de rejoindre ce code : le champ est partagé, mais l'intention
+  // de ces deux boutons est sans ambiguïté.
   el<HTMLButtonElement>('#btn-solo').onclick = () => {
     draft.bot = true;
+    el<HTMLInputElement>('#code').value = '';
     handlers.onStart({ ...draft });
   };
   el<HTMLButtonElement>('#btn-host').onclick = () => {
     draft.bot = false;
+    el<HTMLInputElement>('#code').value = '';
     handlers.onStart({ ...draft });
   };
   el<HTMLButtonElement>('#btn-join').onclick = () => handlers.onJoin();

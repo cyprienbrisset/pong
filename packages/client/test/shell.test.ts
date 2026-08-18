@@ -65,4 +65,25 @@ describe('câblage de la coquille', () => {
     showPanel(null);
     expect(document.querySelectorAll('.panel.on')).toHaveLength(0);
   });
+
+  /**
+   * Bug signalé : un code résiduel dans le champ (lien `?code=` réutilisé,
+   * ancienne tentative de « Rejoindre ») transforme silencieusement un clic sur
+   * « Jouer contre l'IA » ou « Ouvrir une salle » en tentative de rejoindre ce
+   * code — le serveur répond alors "Cette salle n'existe plus." même pour une
+   * création. Les deux boutons de création doivent vider le champ.
+   */
+  it('vide le code de salle résiduel avant une partie solo', () => {
+    initShell(handlers);
+    (document.getElementById('code') as HTMLInputElement).value = 'ABCD';
+    document.getElementById('btn-solo')!.click();
+    expect((document.getElementById('code') as HTMLInputElement).value).toBe('');
+  });
+
+  it('vide le code de salle résiduel avant d\'ouvrir une salle', () => {
+    initShell(handlers);
+    (document.getElementById('code') as HTMLInputElement).value = 'ABCD';
+    document.getElementById('btn-host')!.click();
+    expect((document.getElementById('code') as HTMLInputElement).value).toBe('');
+  });
 });
