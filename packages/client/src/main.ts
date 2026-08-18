@@ -134,7 +134,25 @@ function frame(now: number): void {
     const authoritative = snap.paddles[localSide];
     const inverted = (authoritative.flags & FX_INVERT) !== 0;
     pendingInputs = pruneAcknowledged(pendingInputs, conn.ackSeq);
+    const before = localPaddleY;
     localPaddleY = replayPendingInputs(authoritative.y, authoritative.h, pendingInputs, inverted);
+
+    // Diagnostic temporaire : un saut de raquette signalé persiste malgré la
+    // réconciliation par rejeu. Ceci mesure l'écart réel introduit par CHAQUE
+    // rebasement, pour distinguer un vrai bug de reconstruction d'une cause
+    // totalement différente.
+    if (before !== null && Math.abs(localPaddleY - before) > 3) {
+      // eslint-disable-next-line no-console
+      console.warn('[reconcile] correction', {
+        deltaPx: Math.round((localPaddleY - before) * 10) / 10,
+        tick: snap.tick,
+        ackSeq: conn.ackSeq,
+        pendingCount: pendingInputs.length,
+        authoritativeY: Math.round(authoritative.y),
+        h: authoritative.h,
+        flags: authoritative.flags,
+      });
+    }
   }
 
   const label = countdownLabel(snap?.status, snap?.timer);
