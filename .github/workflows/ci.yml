@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci --no-audit --fund=false
+
+      # Le paquet partagé doit être construit avant que serveur et client ne
+      # puissent être typés : ils consomment ses déclarations.
+      - name: Construire le paquet partagé
+        run: npm run build -w @neon-pong/shared
+
+      - name: Vérifier les types
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      - name: Construire le client et le serveur
+        run: npm run build
+
+      - name: Construire l'image Docker
+        run: docker build -t neon-pong:${{ github.sha }} .

@@ -1,0 +1,27 @@
+# Pile locale, équivalente à ce que Coolify déploie.
+# Lancement : docker compose up --build
+services:
+  neon-pong:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DB_PATH: /data/neon-pong.db
+      LOG_LEVEL: info
+      MAX_ROOMS: "32"
+    volumes:
+      - pong-data:/data
+    restart: unless-stopped
+    # Le jeu est mono-processus par conception : les salles vivent en mémoire.
+    # Une seule réplique, et on plafonne les ressources pour cohabiter avec les
+    # autres services de la machine.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 384M
+
+volumes:
+  pong-data:

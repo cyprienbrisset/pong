@@ -1,0 +1,21 @@
+{
+  "name": "@neon-pong/client",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fontsource/barlow-condensed": "^5.3.0",
+    "@neon-pong/shared": "*"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1",
+    "vite": "^6.0.5"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": ["node"],
+    "paths": { "@neon-pong/shared": ["../shared/src/index.ts"] }
+  },
+  "include": ["src"],
+  "references": [{ "path": "../shared" }]
+}

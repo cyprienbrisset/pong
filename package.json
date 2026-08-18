@@ -1,0 +1,22 @@
+{
+  "name": "neon-pong",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.5" },
+  "workspaces": ["packages/shared", "packages/server", "packages/client"],
+  "scripts": {
+    "dev": "npm run build -w @neon-pong/shared && concurrently -n serveur,client -c cyan,magenta \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "npm run dev -w @neon-pong/server",
+    "dev:client": "npm run dev -w @neon-pong/client",
+    "build": "npm run build -w @neon-pong/shared && npm run build -w @neon-pong/server && npm run build -w @neon-pong/client",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "start": "node packages/server/dist/index.js"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

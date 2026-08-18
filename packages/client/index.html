@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Pong en réseau pour les pauses de midi." />
+  <title>Table ouverte 2026</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <main class="cabinet">
+    <header class="marquee">
+      <div>
+        <h1 class="wordmark">Table ouverte <span class="yr">2026</span></h1>
+        <p class="tagline">Club de la pause de midi · <span id="status" data-state="closed">Hors ligne</span></p>
+      </div>
+      <div class="row">
+        <button class="btn mini" id="btn-sound" aria-pressed="true">Son : on</button>
+        <button class="btn mini" id="btn-themes">Chartes</button>
+        <button class="btn mini" id="btn-board">Classement</button>
+        <button class="btn mini" id="btn-leave">Quitter</button>
+      </div>
+    </header>
+
+    <div class="hud">
+      <div class="side p1">
+        <div class="who"><span class="pname" id="hud-n1">—</span><span class="pscore" id="hud-s1">0</span></div>
+        <div class="chips" id="hud-c1"></div>
+      </div>
+      <div class="middle">
+        <b id="hud-arena">—</b>
+        <span id="hud-rally">Échange : 0</span>
+        <span id="hud-net" class="net">— ms</span>
+      </div>
+      <div class="side right p2">
+        <div class="who"><span class="pname" id="hud-n2">—</span><span class="pscore" id="hud-s2">0</span></div>
+        <div class="chips" id="hud-c2"></div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <canvas id="game" width="1000" height="600" aria-label="Terrain de jeu"></canvas>
+      <div class="scanlines" aria-hidden="true"></div>
+      <div class="vignette" aria-hidden="true"></div>
+
+      <section class="panel on" id="panel-menu" aria-label="Menu">
+        <p class="ptitle">Feuille de match</p>
+
+        <div class="row">
+          <label class="field"><span class="flabel">Votre prénom</span>
+            <input type="text" id="name" maxlength="14" placeholder="Prénom" autocomplete="nickname" />
+          </label>
+          <label class="field"><span class="flabel">Code de salle</span>
+            <input type="text" id="code" maxlength="4" placeholder="ABCD" autocapitalize="characters" />
+          </label>
+          <div class="field"><span class="flabel">&nbsp;</span>
+            <button class="btn" id="btn-join">Rejoindre</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="field"><span class="flabel">Manche en</span>
+            <div class="seg" data-seg="target">
+              <button data-v="5" aria-pressed="false">5 pts</button>
+              <button data-v="7" aria-pressed="true">7 pts</button>
+              <button data-v="11" aria-pressed="false">11 pts</button>
+            </div>
+          </div>
+          <div class="field"><span class="flabel">Bonus</span>
+            <div class="seg" data-seg="powerups">
+              <button data-v="1" aria-pressed="true">Activés</button>
+              <button data-v="0" aria-pressed="false">Coupés</button>
+            </div>
+          </div>
+          <div class="field"><span class="flabel">Niveau de l'IA</span>
+            <div class="seg" data-seg="botLevel">
+              <button data-v="0" aria-pressed="false">Tranquille</button>
+              <button data-v="1" aria-pressed="true">Correct</button>
+              <button data-v="2" aria-pressed="false">Costaud</button>
+              <button data-v="3" aria-pressed="false">Inhumain</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="field full"><span class="flabel">Terrain</span>
+          <div class="arenas" id="arena-picker"></div>
+        </div>
+
+        <div class="row">
+          <button class="btn primary" id="btn-solo">Jouer contre l'IA</button>
+          <button class="btn primary" id="btn-host">Ouvrir une salle</button>
+        </div>
+
+        <p class="keys">
+          Déplacement <kbd>Z</kbd>/<kbd>W</kbd> <kbd>S</kbd> ou <kbd>&uarr;</kbd> <kbd>&darr;</kbd>, souris et tactile acceptés
+        </p>
+      </section>
+
+      <section class="panel" id="panel-over" aria-label="Fin de match">
+        <p class="ptitle" id="over-title">Match terminé</p>
+        <p class="psub" id="over-detail"></p>
+        <div class="row">
+          <button class="btn primary" id="btn-rematch">Revanche</button>
+          <button class="btn" id="btn-back-menu">Retour au menu</button>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-error" aria-label="Erreur">
+        <p class="ptitle" id="error-title">Erreur</p>
+        <p class="psub" id="error-detail"></p>
+        <div class="row"><button class="btn" id="btn-back-menu-2" hidden></button></div>
+      </section>
+
+      <section class="panel" id="panel-themes" aria-label="Chartes graphiques">
+        <p class="ptitle">Chartes graphiques</p>
+        <p class="psub">Choisissez une charte, ou dérivez-en une nouvelle. Les modifications s'appliquent en direct sur la partie qui tourne derrière ce panneau.</p>
+        <div id="theme-host" class="theme-host"></div>
+      </section>
+
+      <section class="panel" id="panel-leaderboard" aria-label="Classement">
+        <p class="ptitle">Classement du serveur</p>
+        <div class="tscroll"><table id="table-leader"></table></div>
+        <p class="psub" id="leader-note"></p>
+        <div class="row"><button class="btn" id="btn-close-board">Fermer</button></div>
+      </section>
+    </div>
+
+    <footer class="footbar">
+      <ul class="room" aria-label="Salle">
+        <li>Salle <span id="room-code">—</span> <button class="btn mini" id="btn-copy-code">Copier le lien</button></li>
+        <li id="room-side">—</li>
+        <li id="room-arena">—</li>
+        <li id="room-rules">—</li>
+        <li id="room-host">—</li>
+        <li id="bot-level-label" hidden></li>
+      </ul>
+      <ul class="room" id="room-seats"></ul>
+    </footer>
+  </main>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
