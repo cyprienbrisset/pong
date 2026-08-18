@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeEloRatings } from '../src/elo.js';
+import { applyEloMatch, computeEloRatings } from '../src/elo.js';
 
 describe('classement Elo', () => {
   it('place un joueur inconnu à la base 1200', () => {
@@ -59,6 +59,46 @@ describe('classement Elo', () => {
 
   it('accepte un facteur K et une base personnalisés', () => {
     const ratings = computeEloRatings([{ playerA: 'Ann', playerB: 'Bob', winner: 'a' }], { k: 32, base: 1000 });
+    expect(ratings.get('Ann')).toBeCloseTo(1016, 5);
+    expect(ratings.get('Bob')).toBeCloseTo(984, 5);
+  });
+});
+
+describe('mise à jour Elo incrémentale', () => {
+  /**
+   * `Store.leaderboard()` ne doit pas rejouer tout l'historique à chaque
+   * lecture : ce recalcul bloquerait la boucle de simulation (mono-thread)
+   * de toutes les salles actives à chaque appel à `/api/leaderboard`. La
+   * mise à jour incrémentale — un seul match traité par appel — permet de
+   * tenir un cache à jour sans jamais rejouer l'historique complet.
+   */
+  it('modifie la table en place plutôt que d\'en renvoyer une nouvelle', () => {
+    const ratings = new Map<string, number>();
+    applyEloMatch(ratings, { playerA: 'Ann', playerB: 'Bob', winner: 'a' });
+    expect(ratings.get('Ann')).toBeCloseTo(1212, 5);
+    expect(ratings.get('Bob')).toBeCloseTo(1188, 5);
+  });
+
+  it("produit exactement le même résultat qu'un recalcul complet, match après match", () => {
+    const matches: { playerA: string; playerB: string; winner: 'a' | 'b' }[] = [];
+    for (let i = 0; i < 8; i++) matches.push({ playerA: 'Bob', playerB: 'Ann', winner: 'a' });
+    for (let i = 0; i < 30; i++) {
+      matches.push({ playerA: 'Theo', playerB: 'Ann', winner: i % 5 < 2 ? 'a' : 'b' });
+    }
+
+    const fromScratch = computeEloRatings(matches);
+
+    const incremental = new Map<string, number>();
+    for (const m of matches) applyEloMatch(incremental, m);
+
+    expect(incremental.get('Bob')).toBeCloseTo(fromScratch.get('Bob')!, 9);
+    expect(incremental.get('Theo')).toBeCloseTo(fromScratch.get('Theo')!, 9);
+    expect(incremental.get('Ann')).toBeCloseTo(fromScratch.get('Ann')!, 9);
+  });
+
+  it('respecte un facteur K et une base personnalisés', () => {
+    const ratings = new Map<string, number>();
+    applyEloMatch(ratings, { playerA: 'Ann', playerB: 'Bob', winner: 'a' }, { k: 32, base: 1000 });
     expect(ratings.get('Ann')).toBeCloseTo(1016, 5);
     expect(ratings.get('Bob')).toBeCloseTo(984, 5);
   });

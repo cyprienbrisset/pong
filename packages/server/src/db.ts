@@ -4,7 +4,7 @@ import type { DatabaseSync as DatabaseSyncCtor } from 'node:sqlite';
 import { dirname } from 'node:path';
 import type { Theme } from '@neon-pong/shared';
 import { config } from './config.js';
-import { computeEloRatings } from './elo.js';
+import { applyEloMatch, computeEloRatings } from './elo.js';
 import { logger } from './logger.js';
 
 /**
@@ -97,6 +97,13 @@ export class Store {
   private listThemesStmt;
   private countThemesStmt;
   private deleteThemeStmt;
+  /**
+   * Ratings Elo tenus en cache mémoire, mis à jour un match à la fois. Sans ce
+   * cache, chaque lecture du classement rejouerait tout l'historique — un
+   * calcul synchrone qui, sur le thread unique de Node, retarde la boucle de
+   * simulation de toutes les salles en cours (des sauts de raquette visibles).
+   */
+  private ratings = new Map<string, number>();
 
   constructor(path = config.dbPath) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
@@ -167,6 +174,18 @@ export class Store {
     this.countThemesStmt = this.db.prepare(`SELECT COUNT(*) AS n FROM themes`);
     this.deleteThemeStmt = this.db.prepare(`DELETE FROM themes WHERE id = ? AND author = ?`);
 
+    // Rejeu unique de tout l'historique, au démarrage seulement : c'est le seul
+    // moment où ce coût est acceptable.
+    const history = this.historyStmt.all() as unknown as {
+      name0: string;
+      won0: number;
+      name1: string;
+      won1: number;
+    }[];
+    this.ratings = computeEloRatings(
+      history.map((h) => ({ playerA: h.name0, playerB: h.name1, winner: h.won0 ? ('a' as const) : ('b' as const) })),
+    );
+
     logger.info({ path }, 'base de données prête');
   }
 
@@ -197,29 +216,25 @@ export class Store {
       logger.error({ err }, "échec de l'enregistrement du match");
       throw err;
     }
+
+    const p0 = rec.players.find((p) => p.side === 0);
+    const p1 = rec.players.find((p) => p.side === 1);
+    if (p0 && p1) {
+      applyEloMatch(this.ratings, { playerA: p0.name, playerB: p1.name, winner: p0.won ? 'a' : 'b' });
+    }
   }
 
   /**
    * Trié par Elo, pas par nombre brut de victoires : un joueur qui accumule les
    * matchs à faible taux de victoire ne doit pas dépasser un joueur régulier
-   * qui en joue moins. L'Elo est recalculé à rebours sur tout l'historique à
-   * chaque appel — largement suffisant au volume d'une équipe.
+   * qui en joue moins. Les ratings viennent du cache tenu à jour par
+   * `recordMatch` — cette lecture ne rejoue jamais l'historique.
    */
   leaderboard(limit = 50): LeaderboardRow[] {
     const rows = this.leaderboardStmt.all() as unknown as Omit<LeaderboardRow, 'rating'>[];
-    const history = this.historyStmt.all() as unknown as {
-      match_id: number;
-      name0: string;
-      won0: number;
-      name1: string;
-      won1: number;
-    }[];
-    const ratings = computeEloRatings(
-      history.map((h) => ({ playerA: h.name0, playerB: h.name1, winner: h.won0 ? ('a' as const) : ('b' as const) })),
-    );
 
     return rows
-      .map((r) => ({ ...r, rating: Math.round(ratings.get(r.name) ?? 1200) }))
+      .map((r) => ({ ...r, rating: Math.round(this.ratings.get(r.name) ?? 1200) }))
       .sort((a, b) => b.rating - a.rating || b.point_diff - a.point_diff || a.matches - b.matches)
       .slice(0, limit);
   }
