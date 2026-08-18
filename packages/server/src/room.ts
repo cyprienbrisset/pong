@@ -23,6 +23,9 @@ import { Bot } from './bot.js';
 import type { Store } from './db.js';
 import { logger } from './logger.js';
 
+/** Cinq ticks de retard (~83 ms à 60 Hz) : au-delà, le rattrapage devient visible. */
+const STALL_THRESHOLD_S = 5 * TICK_DT;
+
 export interface Client {
   id: string;
   name: string;
@@ -211,6 +214,13 @@ export class Room {
     const now = performance.now();
     let delta = (now - this.lastTime) / 1000;
     this.lastTime = now;
+    // Diagnostic : un retard au-delà de quelques ticks trahit un arrêt du
+    // processus (GC majeur, CPU volé par un voisin de VM, appel synchrone
+    // bloquant) — c'est le mécanisme derrière un saut de raquette visible côté
+    // client, qui rattrape alors plusieurs ticks d'un coup.
+    if (delta > STALL_THRESHOLD_S) {
+      logger.warn({ room: this.code, stallMs: Math.round(delta * 1000) }, 'boucle de simulation en retard');
+    }
     // Au-delà d'un demi-seconde de retard (mise en veille, saturation), on
     // abandonne le rattrapage : mieux vaut un saut visible qu'une accélération.
     if (delta > 0.5) delta = TICK_DT;
