@@ -18,6 +18,20 @@ import type {
   Snapshot,
 } from '@neon-pong/shared';
 
+/**
+ * Une reconnexion automatique (coupure Wi-Fi, pas un « Quitter » volontaire)
+ * doit retenter la salle qu'on vient de quitter, pas relire le formulaire —
+ * le champ « Code de salle » y est généralement vide, ce qui faisait
+ * atterrir le joueur ailleurs au lieu de reprendre sa place pendant le délai
+ * de grâce du serveur.
+ */
+export function resolveJoinPayload(
+  payload: Extract<ClientControl, { t: 'join' }>,
+  room: RoomView | null,
+): Extract<ClientControl, { t: 'join' }> {
+  return room ? { ...payload, code: room.code } : payload;
+}
+
 export interface NetHandlers {
   onWelcome(playerId: string, side: Side | null, room: RoomView): void;
   onRoom(room: RoomView): void;
@@ -129,7 +143,7 @@ export class Connection {
     ws.onopen = () => {
       this.reconnectDelay = 500;
       this.handlers.onStatus('open');
-      this.send(this.joinPayload());
+      this.send(resolveJoinPayload(this.joinPayload(), this.room));
       this.startTimers();
     };
 
@@ -250,6 +264,9 @@ export class Connection {
 
   disconnect(): void {
     this.closedByUser = true;
+    // Un départ volontaire ne doit pas laisser croire à un futur « Créer »/
+    // « Rejoindre » qu'on retente encore cette salle.
+    this.room = null;
     this.stopTimers();
     this.ws?.close();
   }

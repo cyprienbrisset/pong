@@ -94,11 +94,15 @@ describe('salle', () => {
     room.dispose();
   });
 
-  it('remplace un partant par un bot pour ne pas laisser la partie en plan', () => {
+  it('remplace un partant par un bot une fois le délai de grâce expiré', () => {
+    // Pas tout de suite : voir describe('délai de grâce') pour la réservation
+    // du siège pendant les quelques secondes qui suivent le départ.
+    vi.useFakeTimers();
     const room = new Room('TEST', { bot: false }, memStore(), () => {});
     room.join(fakeClient('a'));
     room.join(fakeClient('b'));
     room.leave('b');
+    vi.advanceTimersByTime(16_000);
     expect(room.config.bot).toBe(true);
     room.dispose();
   });
@@ -306,6 +310,84 @@ describe('abandon de partie', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].name).toBe('Cyprien');
     expect(rows[0].wins).toBe(1);
+    room.dispose();
+  });
+});
+
+describe('délai de grâce', () => {
+  it('ne remplace pas immédiatement par un bot : le siège reste réservé', () => {
+    const store = memStore();
+    const room = new Room('TEST', { bot: false, target: 5 }, store, () => {});
+    room.join(fakeClient('a', 'Cyprien'));
+    room.join(fakeClient('b', 'Hervé'));
+    room.leave('b');
+
+    expect(room.config.bot).toBe(false);
+    room.dispose();
+  });
+
+  it('reprend exactement son siège si le même pseudonyme revient à temps', () => {
+    vi.useFakeTimers();
+    const store = memStore();
+    const room = new Room('TEST', { bot: false, target: 5 }, store, () => {});
+    room.join(fakeClient('a', 'Cyprien'));
+    room.join(fakeClient('b', 'Hervé'));
+    room.leave('b');
+
+    vi.advanceTimersByTime(5_000); // bien avant les 15 s de grâce
+    const side = room.join(fakeClient('b2', 'Hervé'));
+
+    expect(side).toBe(1);
+    expect(room.config.bot).toBe(false);
+    room.dispose();
+  });
+
+  it("n'abandonne pas le match si le joueur revient avant l'expiration", () => {
+    vi.useFakeTimers();
+    const store = memStore();
+    const room = new Room('TEST', { bot: false, target: 5 }, store, () => {});
+    room.join(fakeClient('a', 'Cyprien'));
+    room.join(fakeClient('b', 'Hervé'));
+    room.leave('b');
+    vi.advanceTimersByTime(5_000);
+    room.join(fakeClient('b2', 'Hervé'));
+
+    room.world.events.push({ t: 'over', winner: 0, scores: [5, 2], bestRally: 9 });
+    room['dispatchEvents'](room.world.events);
+
+    expect(store.leaderboard().map((r) => r.name).sort()).toEqual(['Cyprien', 'Hervé']);
+    room.dispose();
+  });
+
+  it("abandonne le match et rend la main à un bot si personne ne revient à temps", () => {
+    vi.useFakeTimers();
+    const store = memStore();
+    const room = new Room('TEST', { bot: false, target: 5 }, store, () => {});
+    room.join(fakeClient('a', 'Cyprien'));
+    room.join(fakeClient('b', 'Hervé'));
+    room.leave('b');
+
+    vi.advanceTimersByTime(16_000); // au-delà des 15 s de grâce
+
+    expect(room.config.bot).toBe(true);
+
+    room.world.events.push({ t: 'over', winner: 0, scores: [5, 2], bestRally: 9 });
+    room['dispatchEvents'](room.world.events);
+    expect(store.leaderboard()).toHaveLength(0);
+    room.dispose();
+  });
+
+  it('refuse à un tiers le siège réservé pendant la grâce', () => {
+    vi.useFakeTimers();
+    const store = memStore();
+    const room = new Room('TEST', { bot: false, target: 5 }, store, () => {});
+    room.join(fakeClient('a', 'Cyprien'));
+    room.join(fakeClient('b', 'Hervé'));
+    room.leave('b'); // siège 1 en grâce, réservé à « Hervé »
+
+    const side = room.join(fakeClient('c', 'Perig'));
+
+    expect(side).toBeNull(); // spectateur : aucun siège disponible
     room.dispose();
   });
 });

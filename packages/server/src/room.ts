@@ -26,6 +26,19 @@ import { logger } from './logger.js';
 /** Cinq ticks de retard (~83 ms à 60 Hz) : au-delà, le rattrapage devient visible. */
 const STALL_THRESHOLD_S = 5 * TICK_DT;
 
+/**
+ * Un Wi-Fi de bureau qui hoquette deux secondes ne doit pas invalider un
+ * match ni faire reprendre la raquette par un bot. Quinze secondes laissent
+ * le temps à une reconnexion automatique de reprendre le même siège.
+ */
+const GRACE_MS = 15_000;
+
+interface GraceSeat {
+  side: Side;
+  name: string;
+  timer: NodeJS.Timeout;
+}
+
 export interface Client {
   id: string;
   name: string;
@@ -70,6 +83,8 @@ export class Room {
   private abandoned = false;
   /** Noms au coup d'envoi : un joueur qui part ne doit pas fausser l'archive. */
   private seatNames: [string, string] = ['—', '—'];
+  /** Siège réservé le temps d'une reconnexion, au plus un à la fois (deux sièges). */
+  private grace: GraceSeat | null = null;
 
   constructor(
     code: string,
@@ -102,23 +117,39 @@ export class Room {
   }
 
   join(client: Client): Side | null {
+    if (this.grace && this.grace.name === client.name) {
+      // Même pseudonyme, même salle, dans le délai : on considère que c'est
+      // la même personne qui revient — rien n'a bougé côté simulation.
+      clearTimeout(this.grace.timer);
+      const side = this.grace.side;
+      this.grace = null;
+      logger.info({ room: this.code, client: client.id, side }, 'client reprend sa place après coupure');
+      return this.seat(client, side);
+    }
+
     const seats = this.seats;
+    const side0Free = !seats[0] && this.grace?.side !== 0;
+    const side1Free = !seats[1] && this.grace?.side !== 1;
     let side: Side | null = null;
-    if (!seats[0]) side = 0;
-    else if (!seats[1] && !this.config.bot) side = 1;
-    else if (!seats[1] && this.config.bot) {
+    if (side0Free) side = 0;
+    else if (side1Free && !this.config.bot) side = 1;
+    else if (side1Free && this.config.bot) {
       // Un humain qui arrive prend la place du bot : c'est le comportement
       // attendu quand un collègue rejoint une partie solo en cours.
       side = 1;
       this.config = { ...this.config, bot: false };
       this.syncBot();
     }
+    logger.info({ room: this.code, client: client.id, side }, 'client rejoint la salle');
+    return this.seat(client, side);
+  }
+
+  private seat(client: Client, side: Side | null): Side | null {
     client.side = side;
     this.clients.set(client.id, client);
     if (!this.hostId) this.hostId = client.id;
     this.emptySince = null;
     this.refreshSeatNames();
-    logger.info({ room: this.code, client: client.id, side }, 'client rejoint la salle');
     this.broadcastRoom();
     if (!this.timer) this.start();
     return side;
@@ -132,17 +163,30 @@ export class Room {
     if (this.hostId === clientId) {
       this.hostId = this.clients.keys().next().value ?? null;
     }
-    // Un siège libéré pendant une partie est repris par un bot, sinon
-    // l'adversaire restant se retrouve à jouer contre une raquette inerte.
+    // Un siège libéré pendant une partie reste réservé le temps d'un délai de
+    // grâce : une coupure réseau de quelques secondes ne doit ni faire
+    // reprendre la raquette par un bot, ni invalider le match tout de suite.
     if (client.side !== null && this.world.status !== 'over') {
-      this.abandoned = true;
-      if (client.side === 1) {
-        this.config = { ...this.config, bot: true };
-        this.syncBot();
-      }
+      const side = client.side;
+      const name = client.name;
+      this.grace = { side, name, timer: setTimeout(() => this.expireGrace(side), GRACE_MS) };
     }
     if (this.clients.size === 0) this.emptySince = Date.now();
     this.broadcastRoom();
+  }
+
+  /** Personne n'est revenu à temps : on retombe sur le comportement d'un abandon. */
+  private expireGrace(side: Side): void {
+    if (!this.grace || this.grace.side !== side) return;
+    this.grace = null;
+    this.abandoned = true;
+    if (side === 1) {
+      this.config = { ...this.config, bot: true };
+      this.syncBot();
+    }
+    this.refreshSeatNames();
+    this.broadcastRoom();
+    logger.info({ room: this.code, side }, 'délai de grâce expiré, siège libéré');
   }
 
   private refreshSeatNames(): void {
@@ -266,6 +310,13 @@ export class Room {
   private finish(winner: Side, scores: [number, number], bestRally: number): void {
     if (this.recorded) return;
     this.recorded = true;
+    if (this.grace) {
+      // Le match s'est terminé pendant qu'un siège était en délai de grâce :
+      // le joueur n'a pas eu le temps de revenir, ça reste un abandon.
+      clearTimeout(this.grace.timer);
+      this.grace = null;
+      this.abandoned = true;
+    }
     this.refreshSeatNames();
     const seats = this.seats;
 
@@ -330,12 +381,16 @@ export class Room {
       seats: [0, 1].map((side) => {
         const c = seats[side];
         const isBot = side === 1 && this.config.bot;
+        // Pendant la grâce, le siège garde le nom du joueur parti et se
+        // montre « absent » — jamais « Libre » : il reste réservé, un tiers
+        // ne doit pas croire qu'il peut le prendre.
+        const gracing = this.grace?.side === side;
         return {
           side: side as Side,
           id: c?.id ?? (isBot ? 'bot' : ''),
-          name: c?.name ?? (isBot ? (this.bot?.label ?? 'IA') : 'Libre'),
+          name: gracing ? this.grace!.name : (c?.name ?? (isBot ? (this.bot?.label ?? 'IA') : 'Libre')),
           bot: isBot,
-          connected: isBot || !!c?.connected,
+          connected: gracing ? false : isBot || !!c?.connected,
           rttMs: c?.rttMs ?? 0,
         };
       }),
@@ -355,6 +410,10 @@ export class Room {
 
   dispose(): void {
     this.stop();
+    if (this.grace) {
+      clearTimeout(this.grace.timer);
+      this.grace = null;
+    }
     for (const c of this.clients.values()) c.close();
     this.clients.clear();
     this.onEmpty(this);
