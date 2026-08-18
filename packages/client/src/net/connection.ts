@@ -135,6 +135,11 @@ export class Connection {
 
   connect(): void {
     this.closedByUser = false;
+    // Ici, pas dans le traitement du message 'welcome' : ce dernier peut
+    // arriver juste après un premier snapshot pour cette même connexion (la
+    // manche qui attend un second joueur, par exemple), et le vider à ce
+    // moment-là effacerait un état déjà à jour au lieu d'un état périmé.
+    this.buffer.clear();
     this.handlers.onStatus('connecting');
     const ws = new WebSocket(this.url);
     ws.binaryType = 'arraybuffer';
@@ -203,7 +208,6 @@ export class Connection {
         this.playerId = msg.playerId;
         this.side = msg.side;
         this.room = msg.room;
-        this.buffer.clear();
         this.handlers.onWelcome(msg.playerId, msg.side, msg.room);
         return;
       case 'room':

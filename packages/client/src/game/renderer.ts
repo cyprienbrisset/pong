@@ -550,7 +550,16 @@ export class Renderer {
     c.save();
     c.textAlign = 'center';
     c.textBaseline = 'middle';
-    c.font = `500 84px ${this.fontStack()}`;
+    // 84px convient à un chiffre ou « GO ! » ; un message plus long (« En
+    // attente d'un adversaire ») déborderait largement du terrain sans ça.
+    const maxWidth = FIELD_W * 0.85;
+    let size = 84;
+    c.font = `500 ${size}px ${this.fontStack()}`;
+    const width = c.measureText(label).width;
+    if (width > maxWidth) {
+      size = Math.floor(size * (maxWidth / width));
+      c.font = `500 ${size}px ${this.fontStack()}`;
+    }
     c.fillStyle = this.theme.tokens.ink;
     c.strokeStyle = 'rgba(0,0,0,0.35)';
     c.lineWidth = 6;

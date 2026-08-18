@@ -85,6 +85,13 @@ export class Room {
   private seatNames: [string, string] = ['—', '—'];
   /** Siège réservé le temps d'une reconnexion, au plus un à la fois (deux sièges). */
   private grace: GraceSeat | null = null;
+  /**
+   * Vrai une fois que la manche a réellement commencé à jouer. Reste faux tant
+   * que les deux camps ne sont pas occupés (un humain, ou un bot) — sans ça,
+   * l'hôte pouvait accumuler des points contre un siège vide avant même
+   * l'arrivée d'un adversaire.
+   */
+  private matchStarted = false;
 
   constructor(
     code: string,
@@ -151,6 +158,11 @@ export class Room {
     this.emptySince = null;
     this.refreshSeatNames();
     this.broadcastRoom();
+    // Tant que la manche n'a pas démarré (un siège encore vide), aucun tick ne
+    // tourne et broadcastSnapshot() n'est donc jamais appelé depuis la boucle —
+    // sans cet envoi immédiat, le client n'aurait rien à afficher du tout, pas
+    // même le message d'attente.
+    if (!this.matchStarted) this.broadcastSnapshot();
     if (!this.timer) this.start();
     return side;
   }
@@ -220,12 +232,19 @@ export class Room {
     this.world = createWorld(this.config, makeSeed());
     this.recorded = false;
     this.abandoned = false;
+    this.matchStarted = false;
     this.startedAt = Date.now();
     this.syncBot();
   }
 
   private syncBot(): void {
     this.bot = this.config.bot ? new Bot(1, this.config.botLevel) : null;
+  }
+
+  /** Le siège 0 est occupé, et le siège 1 est occupé ou tenu par un bot. */
+  private get readyToStart(): boolean {
+    const seats = this.seats;
+    return !!seats[0] && (!!seats[1] || this.config.bot);
   }
 
   /* ---------------- boucle ---------------- */
@@ -253,6 +272,18 @@ export class Room {
       this.accumulator = 0;
       if (this.emptySince === null) this.emptySince = Date.now();
       return;
+    }
+
+    // La manche ne démarre pas tant que les deux camps ne sont pas occupés :
+    // sans ce garde-fou, l'hôte marquait des points contre un siège vide avant
+    // même l'arrivée d'un adversaire.
+    if (!this.matchStarted) {
+      if (!this.readyToStart) {
+        this.lastTime = performance.now();
+        this.accumulator = 0;
+        return;
+      }
+      this.matchStarted = true;
     }
 
     const now = performance.now();

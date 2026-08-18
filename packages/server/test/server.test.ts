@@ -132,6 +132,32 @@ describe('salle', () => {
     expect(room.isExpired(-1)).toBe(true);
     room.dispose();
   });
+
+  it("ne démarre pas la manche tant que les deux sièges ne sont pas occupés", async () => {
+    const room = new Room('TEST', { bot: false, target: 7 }, memStore(), () => {});
+    room.join(fakeClient('a'));
+
+    await new Promise((r) => setTimeout(r, 100));
+    room['pump']();
+    expect(room.world.tick).toBe(0);
+    expect(room.world.status).toBe('countdown');
+
+    room.join(fakeClient('b'));
+    await new Promise((r) => setTimeout(r, 100));
+    room['pump']();
+    expect(room.world.tick).toBeGreaterThan(0);
+    room.dispose();
+  });
+
+  it('démarre immédiatement en solo contre l\'IA', async () => {
+    const room = new Room('TEST', { bot: true, target: 7 }, memStore(), () => {});
+    room.join(fakeClient('a'));
+
+    await new Promise((r) => setTimeout(r, 100));
+    room['pump']();
+    expect(room.world.tick).toBeGreaterThan(0);
+    room.dispose();
+  });
 });
 
 describe('persistance', () => {

@@ -143,7 +143,10 @@ function frame(now: number): void {
     visualOffset = decayOffset(reconciled.offset, dt);
   }
 
-  const label = countdownLabel(snap?.status, snap?.timer);
+  // Un siège encore vide (jamais un bot) : la manche est gelée côté serveur en
+  // attendant, le décompte figé se lirait sinon comme un bug plutôt qu'une attente.
+  const waiting = !!room && room.seats.some((s) => !s.connected);
+  const label = countdownLabel(snap?.status, snap?.timer, waiting);
   renderer.draw(
     {
       localPaddleY: localPaddleY === null ? null : localPaddleY + visualOffset,
@@ -166,8 +169,9 @@ function frame(now: number): void {
   requestAnimationFrame(frame);
 }
 
-function countdownLabel(status: string | undefined, timer: number | undefined): string | null {
+function countdownLabel(status: string | undefined, timer: number | undefined, waiting: boolean): string | null {
   if (status !== 'countdown' || timer === undefined) return null;
+  if (waiting) return 'En attente d’un adversaire';
   const n = Math.ceil(timer - 0.4);
   return n > 0 ? String(n) : 'GO !';
 }
