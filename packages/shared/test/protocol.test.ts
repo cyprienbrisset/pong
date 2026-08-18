@@ -11,9 +11,22 @@ import {
   encodeInput,
   encodePong,
   encodeSnapshot,
+  isNewer,
   messageType,
   stepWorld,
 } from '../src/index.js';
+
+describe('séquences 16 bits', () => {
+  it('reconnaît une séquence plus récente', () => {
+    expect(isNewer(10, 9)).toBe(true);
+    expect(isNewer(9, 10)).toBe(false);
+  });
+
+  it('gère le repli du compteur', () => {
+    expect(isNewer(2, 65534)).toBe(true);
+    expect(isNewer(65534, 2)).toBe(false);
+  });
+});
 
 describe('entrées', () => {
   it('conserve la séquence et le tick', () => {

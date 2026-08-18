@@ -59,6 +59,16 @@ export function decodeInput(buf: ArrayBuffer): { seq: number; axis: number; clie
   };
 }
 
+/**
+ * Comparaison de séquences 16 bits tolérante au repli. Partagée entre le
+ * serveur (ordonnancement des entrées reçues) et le client (purge des entrées
+ * acquittées lors de la réconciliation) : les deux doivent s'accorder sur ce
+ * qu'« être plus récent » signifie autour du repli à 65536.
+ */
+export function isNewer(seq: number, current: number): boolean {
+  return ((seq - current) & 0xffff) < 0x8000;
+}
+
 /** Ping : l'horodatage client est renvoyé tel quel pour mesurer l'aller-retour. */
 export function encodePing(clientTimeMs: number): ArrayBuffer {
   const buf = new ArrayBuffer(16);

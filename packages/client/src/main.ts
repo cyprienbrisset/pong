@@ -5,6 +5,7 @@ import {
   FX_INVERT,
   FX_SHIELD,
   FX_SHRINK,
+  PADDLE_H,
   POWERS,
   TICK_DT,
   predictPaddle,
@@ -12,6 +13,7 @@ import {
 import type { GameEvent, MatchConfig, RoomView, Side, Snapshot } from '@neon-pong/shared';
 import { Connection } from './net/connection.js';
 import { Input } from './game/input.js';
+import { type PendingInput, pruneAcknowledged, replayPendingInputs } from './net/reconcile.js';
 import { Renderer } from './game/renderer.js';
 import { Sound } from './game/sound.js';
 import { el, initShell, renderLeaderboard, renderRoom, setHudEffects, setStatus, showPanel } from './ui/shell.js';
@@ -48,8 +50,11 @@ let localSide: Side | null = null;
 let room: RoomView | null = null;
 let arena: MatchConfig['arena'] = 'classique';
 let lastFrame = performance.now();
-let predictionAccumulator = 0;
 let lastHudTick = -1;
+/** Entrées envoyées mais pas encore acquittées par le serveur (réconciliation). */
+let pendingInputs: PendingInput[] = [];
+/** Tick du dernier snapshot déjà réconcilié : on ne rejoue qu'une fois par snapshot. */
+let lastReconciledTick = -1;
 
 const pendingConfig: Partial<MatchConfig> = {};
 
@@ -61,6 +66,8 @@ const conn = new Connection(
       room = view;
       arena = view.config.arena;
       localPaddleY = null;
+      pendingInputs = [];
+      lastReconciledTick = -1;
       renderRoom(view, side, conn.playerId);
       showPanel(null);
     },
@@ -82,6 +89,19 @@ const conn = new Connection(
       void refreshLeaderboard();
     },
     onError: (payload) => showPanel('error', { title: 'Impossible de rejoindre', detail: payload.message }),
+    computeInputAxis: (seq) => {
+      if (localSide === null) return 0;
+      const authoritative = conn.buffer.latest?.paddles[localSide];
+      const h = authoritative?.h ?? PADDLE_H;
+      if (localPaddleY === null) localPaddleY = authoritative?.y ?? FIELD_H / 2 - h / 2;
+
+      const inverted = authoritative ? (authoritative.flags & FX_INVERT) !== 0 : false;
+      input.setPaddleHeight(h);
+      const axis = input.axis(localPaddleY);
+      localPaddleY = Math.max(0, Math.min(FIELD_H - h, predictPaddle(localPaddleY, h, axis, inverted)));
+      pendingInputs.push({ seq, axis });
+      return axis;
+    },
   },
   () => ({
     t: 'join',
@@ -102,34 +122,19 @@ function frame(now: number): void {
   const lerp = conn.buffer.sample(now);
   const snap = conn.buffer.latest;
 
-  if (snap && localSide !== null) {
-    // Réconciliation : on part de la position autoritative puis on rejoue
-    // l'entrée courante sur les ticks écoulés depuis. Comme la raquette est
-    // déterministe, l'écart est nul en pratique ; s'il apparaît (paquet perdu,
-    // effet d'inversion appliqué par le serveur), la correction est lissée.
+  if (snap && localSide !== null && snap.tick !== lastReconciledTick) {
+    // Réconciliation : à chaque nouveau snapshot, on repart de la position
+    // confirmée par le serveur et on rejoue exactement les entrées envoyées
+    // mais pas encore acquittées. Pas de lissage continu vers une valeur
+    // toujours en léger retard : c'est ce qui faisait reculer la raquette de
+    // façon visible à chaque arrêt ou changement de direction, même à ping
+    // bas, puisque le retard est structurel (temps d'aller-retour), pas un
+    // symptôme de mauvais réseau.
+    lastReconciledTick = snap.tick;
     const authoritative = snap.paddles[localSide];
-    if (localPaddleY === null) localPaddleY = authoritative.y;
-
     const inverted = (authoritative.flags & FX_INVERT) !== 0;
-    input.setPaddleHeight(authoritative.h);
-    const axis = input.axis(localPaddleY);
-    conn.setAxis(axis);
-
-    predictionAccumulator += dt;
-    while (predictionAccumulator >= TICK_DT) {
-      localPaddleY = predictPaddle(localPaddleY, authoritative.h, axis, inverted);
-      predictionAccumulator -= TICK_DT;
-    }
-
-    const drift = authoritative.y - localPaddleY;
-    if (Math.abs(drift) > 48) {
-      // Divergence franche : on se recale sèchement, mieux vaut un saut qu'un
-      // décalage durable entre ce qu'on voit et ce que le serveur simule.
-      localPaddleY = authoritative.y;
-    } else if (Math.abs(drift) > 0.5) {
-      localPaddleY += drift * Math.min(1, dt * 6);
-    }
-    localPaddleY = Math.max(0, Math.min(FIELD_H - authoritative.h, localPaddleY));
+    pendingInputs = pruneAcknowledged(pendingInputs, conn.ackSeq);
+    localPaddleY = replayPendingInputs(authoritative.y, authoritative.h, pendingInputs, inverted);
   }
 
   const label = countdownLabel(snap?.status, snap?.timer);
@@ -237,6 +242,8 @@ initShell({
     localPaddleY = null;
     localSide = null;
     room = null;
+    pendingInputs = [];
+    lastReconciledTick = -1;
     showPanel('menu');
   },
   onToggleSound: (on) => {

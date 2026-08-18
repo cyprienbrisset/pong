@@ -8,6 +8,7 @@ import {
   TICK_HZ,
   decodeInput,
   encodePong,
+  isNewer,
   messageType,
 } from '@neon-pong/shared';
 import type { ClientControl, ErrorCode, ServerControl } from '@neon-pong/shared';
@@ -219,7 +220,5 @@ function toArrayBuffer(raw: Buffer | ArrayBuffer): ArrayBuffer {
   return raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength) as ArrayBuffer;
 }
 
-/** Comparaison de séquences 16 bits tolérante au repli. */
-export function isNewer(seq: number, current: number): boolean {
-  return ((seq - current) & 0xffff) < 0x8000;
-}
+// Réexporté pour le client, qui en a besoin pour purger ses entrées acquittées.
+export { isNewer };
