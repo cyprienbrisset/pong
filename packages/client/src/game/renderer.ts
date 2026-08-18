@@ -166,6 +166,8 @@ export class Renderer {
   private glow = new GlowCache();
   private particles = new ParticlePool();
   private trails = new Map<number, { x: number; y: number }[]>();
+  /** Angle courant du marqueur de rotation, par balle (indice de tableau). */
+  private spinAngles = new Map<number, number>();
   private shake = 0;
   private dpr = 1;
   private theme: Theme = builtinTheme(DEFAULT_THEME_ID);
@@ -185,6 +187,7 @@ export class Renderer {
     this.theme = theme;
     this.glow.clear();
     this.trails.clear();
+    this.spinAngles.clear();
   }
 
   get themeId(): string {
@@ -223,6 +226,7 @@ export class Renderer {
           this.particles.burst(e.side === 0 ? FIELD_W - 20 : 20, FIELD_H / 2, this.sideColor(e.side), 30, 1.6);
           this.shake = 16;
           this.trails.clear();
+          this.spinAngles.clear();
           break;
       }
     }
@@ -430,14 +434,21 @@ export class Renderer {
       const maxTrail = this.theme.traits.trailLength;
       while (trail.length > maxTrail) trail.shift();
 
-      for (let t = 0; t < trail.length; t++) {
-        const point = trail[t];
-        const ratio = t / trail.length;
-        c.globalAlpha = ratio * 0.4;
-        c.fillStyle = this.theme.tokens.trail;
+      // Un ruban continu plutôt que des points indépendants : la courbure
+      // réelle de la trajectoire (l'effet Magnus) se lit d'un coup d'œil au
+      // lieu de se deviner entre des pastilles espacées.
+      c.lineCap = 'round';
+      for (let t = 0; t < trail.length - 1; t++) {
+        const a = trail[t];
+        const b = trail[t + 1];
+        const ratio = (t + 1) / trail.length;
+        c.globalAlpha = ratio * 0.5;
+        c.strokeStyle = this.theme.tokens.trail;
+        c.lineWidth = BALL_R * (0.3 + 0.9 * ratio);
         c.beginPath();
-        c.arc(point.x, point.y, BALL_R * (0.35 + 0.6 * ratio), 0, Math.PI * 2);
-        c.fill();
+        c.moveTo(a.x, a.y);
+        c.lineTo(b.x, b.y);
+        c.stroke();
       }
       c.globalAlpha = 1;
 
@@ -456,11 +467,31 @@ export class Renderer {
       const img = this.glow.disc(this.theme.tokens.ball, BALL_R, this.theme.traits.glow);
       c.drawImage(img, x - img.width / 2, y - img.height / 2);
 
+      // L'effet Magnus est la mécanique signature du jeu, mais invisible sans
+      // ce trait : il tourne à une vitesse proportionnelle au spin réel de la
+      // balle, dans le sens réel de la rotation.
+      const angle = nextSpinAngle(this.spinAngles.get(i) ?? 0, ball.spin, dt);
+      this.spinAngles.set(i, angle);
+      c.save();
+      c.translate(x, y);
+      c.rotate(angle);
+      c.strokeStyle = this.theme.tokens.accent;
+      c.lineWidth = 2;
+      c.beginPath();
+      c.moveTo(-BALL_R * 0.8, 0);
+      c.lineTo(BALL_R * 0.8, 0);
+      c.stroke();
+      c.restore();
+
       if (this.theme.traits.showAngles) this.drawAngle(c, x, y, ball.vx, ball.vy);
     });
 
-    for (const key of [...this.trails.keys()]) if (!seen.has(key)) this.trails.delete(key);
-    void dt;
+    for (const key of [...this.trails.keys()]) {
+      if (!seen.has(key)) {
+        this.trails.delete(key);
+        this.spinAngles.delete(key);
+      }
+    }
   }
 
   /** Trace l'arc d'angle au dernier point de contact, comme sur un schéma coté. */
@@ -544,4 +575,14 @@ export function ownPaddleMarkerAnchor(side: 0 | 1, y: number, h: number): { x: n
     x: side === 0 ? paddleX(0) + PADDLE_W : paddleX(1),
     y: y + h / 2,
   };
+}
+
+/**
+ * Fait avancer l'angle du marqueur de rotation d'une balle, à une vitesse
+ * proportionnelle à son spin réel — plus l'effet Magnus est fort, plus le
+ * marqueur tourne vite, dans le sens réel de la rotation. Bornée à un tour
+ * pour ne jamais dériver sans limite sur un échange long.
+ */
+export function nextSpinAngle(angle: number, spin: number, dt: number, rate = 6): number {
+  return (angle + spin * rate * dt) % (Math.PI * 2);
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PADDLE_W, paddleX } from '@neon-pong/shared';
-import { ownPaddleMarkerAnchor } from '../src/game/renderer.js';
+import { nextSpinAngle, ownPaddleMarkerAnchor } from '../src/game/renderer.js';
 
 /**
  * Sur les chartes « Oscilloscope » et « Plan technique », sideA et sideB
@@ -32,5 +32,34 @@ describe('repère de raquette locale', () => {
     const left = ownPaddleMarkerAnchor(0, 0, 100);
     const right = ownPaddleMarkerAnchor(1, 0, 100);
     expect(left.x).not.toBe(right.x);
+  });
+});
+
+/**
+ * L'effet Magnus est la mécanique signature du jeu, mais invisible : rien à
+ * l'écran n'indique qu'une balle tourne. Le marqueur de rotation rend ce spin
+ * directement lisible en tournant à une vitesse proportionnelle à sa valeur
+ * réelle.
+ */
+describe('angle du marqueur de rotation', () => {
+  it('ne bouge pas quand la balle ne tourne pas', () => {
+    expect(nextSpinAngle(1.2, 0, 1 / 60)).toBeCloseTo(1.2, 9);
+  });
+
+  it('avance dans le sens positif proportionnellement au spin et au temps', () => {
+    const a = nextSpinAngle(0, 1, 1 / 60);
+    const b = nextSpinAngle(0, 2, 1 / 60);
+    expect(a).toBeGreaterThan(0);
+    expect(b).toBeCloseTo(a * 2, 9);
+  });
+
+  it('tourne dans le sens inverse pour un spin négatif', () => {
+    expect(nextSpinAngle(0, -1, 1 / 60)).toBeLessThan(0);
+  });
+
+  it('ne grandit jamais sans borne : reste dans [-2π, 2π]', () => {
+    let angle = 0;
+    for (let i = 0; i < 100_000; i++) angle = nextSpinAngle(angle, 1.6, 1 / 60);
+    expect(Math.abs(angle)).toBeLessThanOrEqual(Math.PI * 2);
   });
 });
